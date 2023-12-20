@@ -1,0 +1,97 @@
+# The First Steps
+
+To explore the necessary parts and api we are building up a trivial Sankey with basic building blocks of ggplot2
+
+```{r setup}
+library(tidyverse)
+
+df_edges <- bind_rows( tibble_row( x_from=0, node_from='start'   , x_to=1, node_to='middle_1', weight=.75         )
+                     , tibble_row( x_from=0, node_from='start'   , x_to=1, node_to='exit_1'  , weight=.25         )
+                     , tibble_row( x_from=1, node_from='middle_1', x_to=2, node_to='middle_2', weight=.75*.75     )
+                     , tibble_row( x_from=1, node_from='middle_1', x_to=2, node_to='exit_2'  , weight=.25*.75     )
+                     , tibble_row( x_from=2, node_from='middle_2', x_to=3, node_to='end'     , weight=.75*.75*.75 )
+                     , tibble_row( x_from=2, node_from='middle_2', x_to=3, node_to='exit_3'  , weight=.25*.75*.75 ) )
+df_edges
+```
+
+## Plot
+
+```{r node_computation}
+df_nodes <- df_edges %>% 
+	pivot_longer( -weight, names_to=c( '.value', 'side' ), names_pattern='(.*)_(.*)' ) %>% 
+	group_by( side, x, node ) %>% 
+	summarise( height=sum(weight), .groups='drop' ) %>% 
+	pivot_wider( id_cols=c( x, node ), names_from='side', names_glue='height_{side}', values_from='height', values_fill=0 ) %>% 
+	mutate( height=pmax( height_from, height_to ) ) %>% 
+	select( -height_from, -height_to )
+
+df_nodes
+```
+
+with such a df added extra we could add all sorts of extra info easily.
+
+```{r node_y_calc}
+inter_node_spacing <- 0.2
+
+df_nodes_pos <- df_nodes %>% 
+	arrange( x, height ) %>% 
+	group_by(x) %>% 
+	mutate( y_top=cumsum(     height             ) + (0:(n()-1))*inter_node_spacing
+	      , y_bot=cumsum(lag( height, default=0 )) + (0:(n()-1))*inter_node_spacing ) %>% 
+	mutate( y_bot=y_bot - max(y_top)/2
+	      , y_top=y_top - max(y_top)/2 ) 
+df_nodes_pos
+
+ggplot(df_nodes_pos) + 
+	geom_segment(aes( x=x, xend=x, y=y_bot, yend=y_top ))
+```
+
+```{r edge_plotting}
+lerp <- function( lower, upper, x ){
+	lower + (upper-lower)*x
+}
+df_edges_plot <- df_edges %>% 
+	select( -x_from, -x_to ) %>% #In theory we could do something complicated on x in the nodes area
+	inner_join( rename_with( df_nodes_pos, ~str_c( .x, '_from' ) ), by='node_from' ) %>% 
+	inner_join( rename_with( df_nodes_pos, ~str_c( .x, '_to'   ) ), by='node_to'   ) %>% 
+	arrange( x_from, desc(y_top_from), x_to, desc(y_top_to) ) %>% 
+	group_by( x_from, node_from ) %>% 
+	mutate( edge_prop_start_from=cumsum(lag( weight, default=0 ))/height_from
+	      , edge_prop_end_from  =cumsum(     weight             )/height_from ) %>% 
+	mutate( y_edge_top_from = lerp( y_top_from, y_bot_from, edge_prop_start_from )
+	      , y_edge_bot_from = lerp( y_top_from, y_bot_from, edge_prop_end_from   ) ) %>% 
+	ungroup() %>% 
+	group_by( x_to, node_to ) %>% 
+	mutate( edge_prop_start_to=cumsum(lag( weight, default=0 ))/height_to
+	      , edge_prop_end_to  =cumsum(     weight             )/height_to ) %>% 
+	mutate( y_edge_top_to = lerp( y_top_to, y_bot_to, edge_prop_start_to )
+	      , y_edge_bot_to = lerp( y_top_to, y_bot_to, edge_prop_end_to   ) ) %>% 
+	ungroup()
+
+df_edges_plot
+
+
+
+df_edges_polygon <- df_edges_plot %>% 
+	select( x_from, y_edge_top_from, y_edge_bot_from, x_to, y_edge_top_to, y_edge_bot_to ) %>% 
+	mutate( group=1:n() ) %>% 
+	pivot_longer( -group, names_to=c( '.value', 'side' ), names_pattern='(.*)_(from|to)' )
+df_edges_polygon
+
+ggplot(df_nodes_pos) + 
+	geom_segment(aes( x=x, xend=x, y=y_bot, yend=y_top )) +
+	geom_ribbon( aes( x=x, ymin=y_edge_bot, ymax=y_edge_top, group=group, alpha=1/3 ), data=df_edges_polygon, show.legend=F )
+
+```
+
+## Takeaway thoughts
+
+-   x Ordering of nodes
+    -   If node names given as factors order it by that
+    -   Else work out ordering sequentially
+    -   Can also do Sugiyama
+-   y ordering of nodes
+    -   Want bottom mid and top aligned flows
+    -   Also should be able to manually specify
+-   Need some sort of system for generating x's.
+-   Need optional node metadata df for specifying optional parameters.
