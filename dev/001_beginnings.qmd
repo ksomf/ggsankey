@@ -95,3 +95,86 @@ ggplot(df_nodes_pos) +
     -   Also should be able to manually specify
 -   Need some sort of system for generating x's.
 -   Need optional node metadata df for specifying optional parameters.
+
+# Refactor 1: Engeomification
+
+```{r}
+GeomSankey <- ggproto( 'GeomSankey', Geom
+					 , required_aes = c( 'x_from', 'node_from', 'x_to', 'node_to', 'weight' )
+					 , setup_data = function( data, params ){
+						data_nodes <- data %>% 
+							pivot_longer( c( x_from, node_from, x_to, node_to ), names_to=c( '.value', 'side' ), names_pattern='(.*)_(.*)' ) %>% 
+							group_by( side, x, node ) %>% 
+							summarise( height=sum(weight), PANEL=first(PANEL), .groups='drop' ) %>% 
+							pivot_wider( id_cols=c( x, node, PANEL ), names_from='side', names_glue='height_{side}', values_from='height', values_fill=0 ) %>% 
+							mutate( height=pmax( height_from, height_to ) ) %>% 
+							select( -height_from, -height_to )
+						
+					 	inter_node_spacing <- 0.2
+
+						data_nodes_pos <- data_nodes %>% 
+							arrange( x, height ) %>% 
+							group_by(x) %>% 
+							mutate( yend=cumsum(     height             ) + (0:(n()-1))*inter_node_spacing
+							      , y   =cumsum(lag( height, default=0 )) + (0:(n()-1))*inter_node_spacing ) %>% 
+							mutate( y   =y    - max(yend)/2
+							      , yend=yend - max(yend)/2 ) %>% 
+							mutate( xend=x
+							      , linewidth=GeomSegment$default_aes$linewidth
+							      , linetype=GeomSegment$default_aes$linetype
+							      , colour=GeomSegment$default_aes$colour
+							      , alpha=GeomSegment$default_aes$alpha )
+						data_nodes_pos
+					 }
+					 , draw_panel = function( self, data, panel_params, coord ){
+						node_grob <- GeomSegment$draw_panel( data, panel_params, coord )
+						
+						ggplot2:::ggname( 'geom_sankey', grid::grobTree(
+							node_grob	
+						))
+					   }
+)
+
+geom_sankey <- function( mapping=NULL
+					   , data=NULL
+					   , stat='identity'
+					   , position='identity'
+					   , show.legend=NA
+					   , inherit.aes=TRUE
+					   , ... ){
+	layer( geom=GeomSankey
+		 , mapping=mapping
+		 , data=data
+		 , stat=stat
+		 , position=position
+		 , show.legend=show.legend
+		 , inherit.aes=inherit.aes
+		 , params=list(...)
+		 )
+}
+
+ggplot(df_edges) + 
+	geom_sankey(aes( x_from=x_from, node_from=node_from, x_to=x_to, node_to=node_to, weight=weight ))
+```
+
+```{r}
+GeomSimplePoint <- ggproto("GeomSimplePoint", GeomPoint,
+  draw_panel = function(data, panel_params, coord) {
+  	GeomPoint$draw_panel(data, panel_params, coord)
+  }
+)
+
+geom_simple_point <- function(mapping = NULL, data = NULL, stat = "identity",
+                              position = "identity", na.rm = FALSE, show.legend = NA, 
+                              inherit.aes = TRUE, ...) {
+  layer(
+    geom = GeomSimplePoint, mapping = mapping,  data = data, stat = stat, 
+    position = position, show.legend = show.legend, inherit.aes = inherit.aes,
+    params = list(na.rm = na.rm, ...)
+  )
+}
+
+ggplot(mpg, aes(displ, hwy)) + 
+	geom_simple_point()
+```
+
