@@ -99,39 +99,82 @@ ggplot(df_nodes_pos) +
 # Refactor 1: Engeomification
 
 ```{r}
+# Next step is to perform polygonification earlier so coord works well with it, but still allow recontruction of node in draw_panel
+lerp <- function( lower, upper, x ){
+	lower + (upper-lower)*x
+}
+
 GeomSankey <- ggproto( 'GeomSankey', Geom
 					 , required_aes = c( 'x_from', 'node_from', 'x_to', 'node_to', 'weight' )
+					 , non_missing_aes = c( 'x', 'ymin', 'ymax', 'group', 'alpha' )
 					 , setup_data = function( data, params ){
-						data_nodes <- data %>% 
+					 	print('setup_data')
+					 	inter_node_spacing <- 0.2
+					 	
+						data_nodes_proto <- data %>% 
 							pivot_longer( c( x_from, node_from, x_to, node_to ), names_to=c( '.value', 'side' ), names_pattern='(.*)_(.*)' ) %>% 
 							group_by( side, x, node ) %>% 
 							summarise( height=sum(weight), PANEL=first(PANEL), .groups='drop' ) %>% 
 							pivot_wider( id_cols=c( x, node, PANEL ), names_from='side', names_glue='height_{side}', values_from='height', values_fill=0 ) %>% 
 							mutate( height=pmax( height_from, height_to ) ) %>% 
-							select( -height_from, -height_to )
-						
-					 	inter_node_spacing <- 0.2
-
-						data_nodes_pos <- data_nodes %>% 
+							select( -height_from, -height_to ) %>% 
 							arrange( x, height ) %>% 
 							group_by(x) %>% 
 							mutate( yend=cumsum(     height             ) + (0:(n()-1))*inter_node_spacing
 							      , y   =cumsum(lag( height, default=0 )) + (0:(n()-1))*inter_node_spacing ) %>% 
 							mutate( y   =y    - max(yend)/2
 							      , yend=yend - max(yend)/2 ) %>% 
-							mutate( xend=x
-							      , linewidth=GeomSegment$default_aes$linewidth
+							mutate(xend=x) %>% 
+							select(-PANEL)
+						
+						data_edges_plot <- data %>% 
+							select( -x_from, -x_to ) %>% #In theory we could do something complicated on x in the nodes area
+							inner_join( rename_with( data_nodes_proto, ~str_c( .x, '_from' ) ), by='node_from' ) %>% 
+							inner_join( rename_with( data_nodes_proto, ~str_c( .x, '_to'   ) ), by='node_to'   ) %>% 
+							arrange( x_from, desc(yend_from), x_to, desc(yend_to) ) %>% 
+							group_by( x_from, node_from ) %>% 
+							mutate( edge_prop_start_from=cumsum(lag( weight, default=0 ))/height_from
+							      , edge_prop_end_from  =cumsum(     weight             )/height_from ) %>% 
+							mutate( ymax_from = lerp( yend_from, y_from, edge_prop_start_from )
+							      , ymin_from = lerp( yend_from, y_from, edge_prop_end_from   ) ) %>% 
+							ungroup() %>% 
+							group_by( x_to, node_to ) %>% 
+							mutate( edge_prop_start_to=cumsum(lag( weight, default=0 ))/height_to
+							      , edge_prop_end_to  =cumsum(     weight             )/height_to ) %>% 
+							mutate( ymax_to = lerp( yend_to, y_to, edge_prop_start_to )
+							      , ymin_to = lerp( yend_to, y_to, edge_prop_end_to   ) ) %>% 
+							ungroup()
+						data_edges_plot
+					 }
+					 , draw_panel = function( self, data, panel_params, coord ){
+					 	print('draw_panel')
+						print(coord)
+						
+						data_edges_polygon <- data %>% 
+							select( PANEL, x_from, ymax_from, ymin_from, x_to, ymax_to, ymin_to ) %>% 
+							mutate( group=1:n() ) %>% 
+							pivot_longer( c( x_from, ymax_from, ymin_from, x_to, ymax_to, ymin_to ), names_to=c( '.value', 'side' ), names_pattern='(.*)_(from|to)' ) %>% 
+							mutate( alpha=1/3
+							      , fill=GeomRibbon$default_aes$fill
+							      , colour=GeomRibbon$default_aes$colour
+							      , linewidth=GeomRibbon$default_aes$linewidth
+							      , linetype=GeomRibbon$default_aes$linetype )
+									
+					 	
+						data_nodes <- data %>% 
+							pivot_longer( matches('_to$|_from$'), names_to=c( '.value', 'side' ), names_pattern='(.*)_(.*)' ) %>% 
+							group_by( side, x, node ) %>% 
+							mutate( linewidth=GeomSegment$default_aes$linewidth
 							      , linetype=GeomSegment$default_aes$linetype
 							      , colour=GeomSegment$default_aes$colour
 							      , alpha=GeomSegment$default_aes$alpha )
-						data_nodes_pos
-					 }
-					 , draw_panel = function( self, data, panel_params, coord ){
-						node_grob <- GeomSegment$draw_panel( data, panel_params, coord )
 						
-						ggplot2:::ggname( 'geom_sankey', grid::grobTree(
-							node_grob	
-						))
+						node_grob  <- GeomSegment$draw_panel( data_nodes        , panel_params, coord )
+						edges_grob <- GeomRibbon$ draw_panel( data_edges_polygon, panel_params, coord )
+						
+						
+						ggplot2:::ggname( 'geom_sankey', grid::grobTree( edges_grob	
+						                                               , node_grob ))
 					   }
 )
 
